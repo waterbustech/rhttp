@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:meta/meta.dart';
+import 'package:rhttp/src/interceptor/interceptor.dart';
 import 'package:rhttp/src/model/cancel_token.dart';
 import 'package:rhttp/src/model/request.dart';
 import 'package:rhttp/src/model/response.dart';
@@ -14,28 +16,64 @@ class RhttpClient {
   /// Settings for the client.
   final ClientSettings settings;
 
+  /// One or more interceptors that are used to modify requests and responses.
+  final Interceptor? interceptor;
+
   /// Internal reference to the Rust client.
-  final int _ref;
+  @internal
+  final int ref;
 
-  RhttpClient._(this.settings, this._ref);
+  const RhttpClient._({
+    required this.settings,
+    required this.interceptor,
+    required this.ref,
+  });
 
-  static Future<RhttpClient> create({ClientSettings? settings}) async {
+  /// Creates a new HTTP client asynchronously.
+  /// Use this method if your app is already running to avoid blocking the UI.
+  static Future<RhttpClient> create({
+    ClientSettings? settings,
+    List<Interceptor>? interceptors,
+  }) async {
     settings ??= const ClientSettings();
     final ref = await rust.registerClient(
       settings: settings.toRustType(),
     );
-    return RhttpClient._(settings, ref);
+    return RhttpClient._(
+      settings: settings,
+      interceptor: parseInterceptorList(interceptors),
+      ref: ref,
+    );
+  }
+
+  /// Creates a new HTTP client synchronously.
+  /// Use this method if your app is starting up to simplify the code
+  /// that might arise by using async/await.
+  factory RhttpClient.createSync({
+    ClientSettings? settings,
+    List<Interceptor>? interceptors,
+  }) {
+    settings ??= const ClientSettings();
+    final ref = rust.registerClientSync(
+      settings: settings.toRustType(),
+    );
+    return RhttpClient._(
+      settings: settings,
+      interceptor: parseInterceptorList(interceptors),
+      ref: ref,
+    );
   }
 
   /// Disposes the client.
   /// This frees the resources associated with the client.
   /// After calling this method, the client should not be used anymore.
   void dispose() {
-    rust.removeClient(address: _ref);
+    rust.removeClient(address: ref);
   }
 
   /// Makes an HTTP request.
-  Future<HttpResponse> requestGeneric({
+  /// Use [send] if you already have a [BaseHttpRequest] object.
+  Future<HttpResponse> request({
     required HttpMethod method,
     required String url,
     Map<String, String>? query,
@@ -44,9 +82,10 @@ class RhttpClient {
     required HttpExpectBody expectBody,
     CancelToken? cancelToken,
   }) =>
-      requestInternalGeneric(
-        clientRef: _ref,
-        settings: null,
+      requestInternalGeneric(HttpRequest(
+        client: this,
+        settings: settings,
+        interceptor: interceptor,
         method: method,
         url: url,
         query: query,
@@ -54,25 +93,17 @@ class RhttpClient {
         body: body,
         expectBody: expectBody,
         cancelToken: cancelToken,
-      );
+      ));
 
-  /// Alias for [requestText].
-  Future<HttpTextResponse> request({
-    required HttpMethod method,
-    required String url,
-    Map<String, String>? query,
-    HttpHeaders? headers,
-    HttpBody? body,
-    CancelToken? cancelToken,
-  }) =>
-      requestText(
-        method: method,
-        url: url,
-        query: query,
-        headers: headers,
-        body: body,
-        cancelToken: cancelToken,
-      );
+  /// Similar to [request], but uses a [BaseHttpRequest] object
+  /// instead of individual parameters.
+  Future<HttpResponse> send(BaseHttpRequest request) =>
+      requestInternalGeneric(HttpRequest.from(
+        request: request,
+        client: this,
+        settings: settings,
+        interceptor: interceptor,
+      ));
 
   /// Makes an HTTP request and returns the response as text.
   Future<HttpTextResponse> requestText({
@@ -83,7 +114,7 @@ class RhttpClient {
     HttpBody? body,
     CancelToken? cancelToken,
   }) async {
-    final response = await requestGeneric(
+    final response = await request(
       method: method,
       url: url,
       query: query,
@@ -104,7 +135,7 @@ class RhttpClient {
     HttpBody? body,
     CancelToken? cancelToken,
   }) async {
-    final response = await requestGeneric(
+    final response = await request(
       method: method,
       url: url,
       query: query,
@@ -125,7 +156,7 @@ class RhttpClient {
     HttpBody? body,
     CancelToken? cancelToken,
   }) async {
-    final response = await requestGeneric(
+    final response = await request(
       method: method,
       url: url,
       query: query,
@@ -144,7 +175,7 @@ class RhttpClient {
     HttpHeaders? headers,
     CancelToken? cancelToken,
   }) =>
-      request(
+      requestText(
         method: HttpMethod.get,
         url: url,
         query: query,
@@ -206,7 +237,7 @@ class RhttpClient {
     HttpBody? body,
     CancelToken? cancelToken,
   }) =>
-      request(
+      requestText(
         method: HttpMethod.post,
         url: url,
         query: query,
@@ -224,7 +255,7 @@ class RhttpClient {
     HttpBody? body,
     CancelToken? cancelToken,
   }) =>
-      request(
+      requestText(
         method: HttpMethod.put,
         url: url,
         query: query,
@@ -242,7 +273,7 @@ class RhttpClient {
     HttpBody? body,
     CancelToken? cancelToken,
   }) =>
-      request(
+      requestText(
         method: HttpMethod.delete,
         url: url,
         query: query,
@@ -259,7 +290,7 @@ class RhttpClient {
     HttpHeaders? headers,
     CancelToken? cancelToken,
   }) =>
-      request(
+      requestText(
         method: HttpMethod.head,
         url: url,
         query: query,
@@ -276,7 +307,7 @@ class RhttpClient {
     HttpBody? body,
     CancelToken? cancelToken,
   }) =>
-      request(
+      requestText(
         method: HttpMethod.patch,
         url: url,
         query: query,
@@ -294,7 +325,7 @@ class RhttpClient {
     HttpBody? body,
     CancelToken? cancelToken,
   }) =>
-      request(
+      requestText(
         method: HttpMethod.options,
         url: url,
         query: query,
@@ -312,7 +343,7 @@ class RhttpClient {
     HttpBody? body,
     CancelToken? cancelToken,
   }) =>
-      request(
+      requestText(
         method: HttpMethod.trace,
         url: url,
         query: query,

@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:meta/meta.dart';
 import 'package:rhttp/src/model/request.dart';
 import 'package:rhttp/src/rust/api/client.dart' as rust_client;
@@ -19,6 +21,9 @@ class ClientSettings {
   /// Throws an exception if the status code is 4xx or 5xx.
   final bool throwOnStatusCode;
 
+  /// Proxy settings.
+  final ProxySettings? proxySettings;
+
   /// TLS settings.
   final TlsSettings? tlsSettings;
 
@@ -27,17 +32,43 @@ class ClientSettings {
     this.timeout,
     this.connectTimeout,
     this.throwOnStatusCode = true,
+    this.proxySettings,
     this.tlsSettings,
   });
+}
+
+sealed class ProxySettings {
+  const ProxySettings();
+
+  /// Disables any proxy settings including system settings.
+  const factory ProxySettings.noProxy() = NoProxy;
+}
+
+class NoProxy extends ProxySettings {
+  const NoProxy();
 }
 
 /// TLS settings for the client.
 /// Used to configure HTTPS connections.
 class TlsSettings {
+  /// Trust the root certificates that are pre-installed on the system.
+  final bool trustRootCertificates;
+
+  /// The trusted root certificates in PEM format.
+  /// Either specify the root certificate or the full
+  /// certificate chain.
+  /// The Rust API currently doesn't support trusting a single leaf certificate.
+  /// Hint: PEM format starts with `-----BEGIN CERTIFICATE-----`.
+  final List<String> trustedRootCertificates;
+
   /// Verify the server's certificate.
   /// If set to `false`, the client will accept any certificate.
   /// This is insecure and should only be used for testing.
   final bool verifyCertificates;
+
+  /// The client certificate to use.
+  /// This is used for client authentication / mutual TLS.
+  final ClientCertificate? clientCertificate;
 
   /// The minimum TLS version to use.
   final rust_client.TlsVersion? minTlsVersion;
@@ -46,9 +77,26 @@ class TlsSettings {
   final rust_client.TlsVersion? maxTlsVersion;
 
   const TlsSettings({
+    this.trustRootCertificates = true,
+    this.trustedRootCertificates = const [],
     this.verifyCertificates = true,
+    this.clientCertificate,
     this.minTlsVersion,
     this.maxTlsVersion,
+  });
+}
+
+/// A client certificate for client authentication / mutual TLS.
+class ClientCertificate {
+  /// The certificate in PEM format.
+  final String certificate;
+
+  /// The private key in PEM format.
+  final String privateKey;
+
+  const ClientCertificate({
+    required this.certificate,
+    required this.privateKey,
   });
 }
 
@@ -60,15 +108,29 @@ extension ClientSettingsExt on ClientSettings {
       timeout: timeout,
       connectTimeout: connectTimeout,
       throwOnStatusCode: throwOnStatusCode,
+      proxySettings: proxySettings?._toRustType(),
       tlsSettings: tlsSettings?._toRustType(),
     );
+  }
+}
+
+extension on ProxySettings {
+  rust_client.ProxySettings _toRustType() {
+    return switch (this) {
+      NoProxy() => rust_client.ProxySettings.noProxy,
+    };
   }
 }
 
 extension on TlsSettings {
   rust_client.TlsSettings _toRustType() {
     return rust_client.TlsSettings(
+      trustRootCertificates: trustRootCertificates,
+      trustedRootCertificates: trustedRootCertificates
+          .map((e) => Uint8List.fromList(e.codeUnits))
+          .toList(),
       verifyCertificates: verifyCertificates,
+      clientCertificate: clientCertificate?._toRustType(),
       minTlsVersion: minTlsVersion,
       maxTlsVersion: maxTlsVersion,
     );
@@ -84,5 +146,14 @@ extension on HttpVersionPref {
       HttpVersionPref.http3 => rust.HttpVersionPref.http3,
       HttpVersionPref.all => rust.HttpVersionPref.all,
     };
+  }
+}
+
+extension on ClientCertificate {
+  rust_client.ClientCertificate _toRustType() {
+    return rust_client.ClientCertificate(
+      certificate: Uint8List.fromList(certificate.codeUnits),
+      privateKey: Uint8List.fromList(privateKey.codeUnits),
+    );
   }
 }

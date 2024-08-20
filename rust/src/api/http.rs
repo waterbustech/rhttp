@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::str::FromStr;
 
-use flutter_rust_bridge::DartFnFuture;
+use flutter_rust_bridge::{frb, DartFnFuture};
 use futures_util::StreamExt;
 use reqwest::header::{HeaderName, HeaderValue};
 use reqwest::{Method, Response, Url, Version};
@@ -10,7 +10,6 @@ use tokio_util::sync::CancellationToken;
 
 use crate::api::client::{ClientSettings, RequestClient};
 use crate::api::error::RhttpError;
-use crate::api::http_types::HttpHeaderName;
 use crate::api::{client_pool, request_pool};
 use crate::frb_generated::StreamSink;
 
@@ -43,8 +42,7 @@ impl HttpMethod {
 }
 
 pub enum HttpHeaders {
-    Map(HashMap<HttpHeaderName, String>),
-    RawMap(HashMap<String, String>),
+    Map(HashMap<String, String>),
     List(Vec<(String, String)>),
 }
 
@@ -125,6 +123,15 @@ pub enum HttpResponseBody {
 }
 
 pub fn register_client(settings: ClientSettings) -> Result<i64, RhttpError> {
+    register_client_internal(settings)
+}
+
+#[frb(sync)]
+pub fn register_client_sync(settings: ClientSettings) -> Result<i64, RhttpError> {
+    register_client_internal(settings)
+}
+
+fn register_client_internal(settings: ClientSettings) -> Result<i64, RhttpError> {
     let client = RequestClient::new(settings)?;
     let (address, _) = client_pool::register_client(client)?;
 
@@ -155,7 +162,7 @@ pub async fn make_http_request(
         on_cancel_token(address).await;
 
         tokio::select! {
-            _ = cloned_token.cancelled() => Err(RhttpError::RhttpCancelError(url.to_owned())),
+            _ = cloned_token.cancelled() => Err(RhttpError::RhttpCancelError),
             response = make_http_request_inner(client_address, settings, method, url.to_owned(), query, headers, body, expect_body) => {
                 request_pool::remove_token(address);
                 response
@@ -242,7 +249,7 @@ pub async fn make_http_request_receive_stream(
         on_cancel_token(address).await;
 
         tokio::select! {
-            _ = cloned_token.cancelled() => Err(RhttpError::RhttpCancelError(url.to_owned())),
+            _ = cloned_token.cancelled() => Err(RhttpError::RhttpCancelError),
             _ = make_http_request_receive_stream_inner(
                 client_address,
                 settings,
@@ -364,14 +371,6 @@ async fn make_http_request_helper(
         match headers {
             Some(HttpHeaders::Map(map)) => {
                 for (k, v) in map {
-                    let header_name = k.to_actual_header_name();
-                    let header_value = HeaderValue::from_str(&v)
-                        .map_err(|e| RhttpError::RhttpUnknownError(e.to_string()))?;
-                    request = request.header(header_name, header_value);
-                }
-            }
-            Some(HttpHeaders::RawMap(map)) => {
-                for (k, v) in map {
                     let header_name = HeaderName::from_str(&k)
                         .map_err(|e| RhttpError::RhttpUnknownError(e.to_string()))?;
                     let header_value = HeaderValue::from_str(&v)
@@ -436,7 +435,7 @@ async fn make_http_request_helper(
 
     let response = client.client.execute(request).await.map_err(|e| {
         if e.is_timeout() {
-            RhttpError::RhttpTimeoutError(url.to_owned())
+            RhttpError::RhttpTimeoutError
         } else {
             // We use the debug string because it contains more information
             let inner = e.source();
@@ -447,10 +446,7 @@ async fn make_http_request_helper(
             };
 
             if is_cert_error {
-                RhttpError::RhttpInvalidCertificateError(
-                    url.to_owned(),
-                    format!("{:?}", inner.unwrap()),
-                )
+                RhttpError::RhttpInvalidCertificateError(format!("{:?}", inner.unwrap()))
             } else {
                 RhttpError::RhttpUnknownError(match inner {
                     Some(inner) => format!("{inner:?}"),
@@ -464,7 +460,6 @@ async fn make_http_request_helper(
         let status = response.status();
         if status.is_client_error() || status.is_server_error() {
             return Err(RhttpError::RhttpStatusCodeError(
-                url,
                 response.status().as_u16(),
                 header_to_vec(response.headers()),
                 match expect_body {
@@ -497,9 +492,11 @@ fn header_to_vec(headers: &reqwest::header::HeaderMap) -> Vec<(String, String)> 
         .collect()
 }
 
-pub fn cancel_request(address: i64) {
+pub fn cancel_request(address: i64) -> bool {
     if let Some(token) = request_pool::get_token(address) {
         token.cancel();
-        request_pool::remove_token(address);
+        request_pool::remove_token(address).is_some()
+    } else {
+        false
     }
 }

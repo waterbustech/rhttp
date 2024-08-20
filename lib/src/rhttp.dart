@@ -1,22 +1,26 @@
 import 'dart:async';
 
+import 'package:rhttp/src/interceptor/interceptor.dart';
 import 'package:rhttp/src/model/cancel_token.dart';
 import 'package:rhttp/src/model/request.dart';
 import 'package:rhttp/src/model/response.dart';
 import 'package:rhttp/src/model/settings.dart';
 import 'package:rhttp/src/request.dart';
 import 'package:rhttp/src/rust/frb_generated.dart';
-export 'package:rhttp/src/rust/api/http_types.dart' show HttpHeaderName;
 
 class Rhttp {
+  const Rhttp._();
+
   /// Initializes the Rust library.
   static Future<void> init() async {
     await RustLib.init();
   }
 
   /// Makes an HTTP request.
-  static Future<HttpResponse> requestGeneric({
+  /// Use [send] if you already have a [BaseHttpRequest] object.
+  static Future<HttpResponse> request({
     ClientSettings? settings,
+    List<Interceptor>? interceptors,
     required HttpMethod method,
     required String url,
     Map<String, String>? query,
@@ -25,9 +29,10 @@ class Rhttp {
     required HttpExpectBody expectBody,
     CancelToken? cancelToken,
   }) =>
-      requestInternalGeneric(
-        clientRef: null,
+      requestInternalGeneric(HttpRequest(
+        client: null,
         settings: settings,
+        interceptor: parseInterceptorList(interceptors),
         method: method,
         url: url,
         query: query,
@@ -35,31 +40,26 @@ class Rhttp {
         body: body,
         expectBody: expectBody,
         cancelToken: cancelToken,
-      );
+      ));
 
-  /// Alias for [requestText].
-  static Future<HttpTextResponse> request({
+  /// Similar to [request], but uses a [BaseHttpRequest] object
+  /// instead of individual parameters.
+  static Future<HttpResponse> send(
+    BaseHttpRequest request, {
     ClientSettings? settings,
-    required HttpMethod method,
-    required String url,
-    Map<String, String>? query,
-    HttpHeaders? headers,
-    HttpBody? body,
-    CancelToken? cancelToken,
+    List<Interceptor>? interceptors,
   }) =>
-      requestText(
+      requestInternalGeneric(HttpRequest.from(
+        request: request,
+        client: null,
         settings: settings,
-        method: method,
-        url: url,
-        query: query,
-        headers: headers,
-        body: body,
-        cancelToken: cancelToken,
-      );
+        interceptor: parseInterceptorList(interceptors),
+      ));
 
   /// Makes an HTTP request and returns the response as text.
   static Future<HttpTextResponse> requestText({
     ClientSettings? settings,
+    List<Interceptor>? interceptors,
     required HttpMethod method,
     required String url,
     Map<String, String>? query,
@@ -67,8 +67,9 @@ class Rhttp {
     HttpBody? body,
     CancelToken? cancelToken,
   }) async {
-    final response = await requestGeneric(
+    final response = await request(
       settings: settings,
+      interceptors: interceptors,
       method: method,
       url: url,
       query: query,
@@ -83,6 +84,7 @@ class Rhttp {
   /// Makes an HTTP request and returns the response as bytes.
   static Future<HttpBytesResponse> requestBytes({
     ClientSettings? settings,
+    List<Interceptor>? interceptors,
     required HttpMethod method,
     required String url,
     Map<String, String>? query,
@@ -90,8 +92,9 @@ class Rhttp {
     HttpBody? body,
     CancelToken? cancelToken,
   }) async {
-    final response = await requestGeneric(
+    final response = await request(
       settings: settings,
+      interceptors: interceptors,
       method: method,
       url: url,
       query: query,
@@ -106,6 +109,7 @@ class Rhttp {
   /// Makes an HTTP request and returns the response as a stream.
   static Future<HttpStreamResponse> requestStream({
     ClientSettings? settings,
+    List<Interceptor>? interceptors,
     required HttpMethod method,
     required String url,
     Map<String, String>? query,
@@ -113,8 +117,9 @@ class Rhttp {
     HttpBody? body,
     CancelToken? cancelToken,
   }) async {
-    final response = await requestGeneric(
+    final response = await request(
       settings: settings,
+      interceptors: interceptors,
       method: method,
       url: url,
       query: query,
@@ -130,12 +135,14 @@ class Rhttp {
   static Future<HttpTextResponse> get(
     String url, {
     ClientSettings? settings,
+    List<Interceptor>? interceptors,
     Map<String, String>? query,
     HttpHeaders? headers,
     CancelToken? cancelToken,
   }) =>
-      request(
+      requestText(
         settings: settings,
+        interceptors: interceptors,
         method: HttpMethod.get,
         url: url,
         query: query,
@@ -147,12 +154,14 @@ class Rhttp {
   static Future<HttpTextResponse> getText(
     String url, {
     ClientSettings? settings,
+    List<Interceptor>? interceptors,
     Map<String, String>? query,
     HttpHeaders? headers,
     CancelToken? cancelToken,
   }) =>
       requestText(
         settings: settings,
+        interceptors: interceptors,
         method: HttpMethod.get,
         url: url,
         query: query,
@@ -164,12 +173,14 @@ class Rhttp {
   static Future<HttpBytesResponse> getBytes(
     String url, {
     ClientSettings? settings,
+    List<Interceptor>? interceptors,
     Map<String, String>? query,
     HttpHeaders? headers,
     CancelToken? cancelToken,
   }) =>
       requestBytes(
         settings: settings,
+        interceptors: interceptors,
         method: HttpMethod.get,
         url: url,
         query: query,
@@ -181,12 +192,14 @@ class Rhttp {
   static Future<HttpStreamResponse> getStream(
     String url, {
     ClientSettings? settings,
+    List<Interceptor>? interceptors,
     Map<String, String>? query,
     HttpHeaders? headers,
     CancelToken? cancelToken,
   }) =>
       requestStream(
         settings: settings,
+        interceptors: interceptors,
         method: HttpMethod.get,
         url: url,
         query: query,
@@ -199,13 +212,15 @@ class Rhttp {
   static Future<HttpTextResponse> post(
     String url, {
     ClientSettings? settings,
+    List<Interceptor>? interceptors,
     Map<String, String>? query,
     HttpHeaders? headers,
     HttpBody? body,
     CancelToken? cancelToken,
   }) =>
-      request(
+      requestText(
         settings: settings,
+        interceptors: interceptors,
         method: HttpMethod.post,
         url: url,
         query: query,
@@ -219,13 +234,15 @@ class Rhttp {
   static Future<HttpTextResponse> put(
     String url, {
     ClientSettings? settings,
+    List<Interceptor>? interceptors,
     Map<String, String>? query,
     HttpHeaders? headers,
     HttpBody? body,
     CancelToken? cancelToken,
   }) =>
-      request(
+      requestText(
         settings: settings,
+        interceptors: interceptors,
         method: HttpMethod.put,
         url: url,
         query: query,
@@ -239,13 +256,15 @@ class Rhttp {
   static Future<HttpTextResponse> delete(
     String url, {
     ClientSettings? settings,
+    List<Interceptor>? interceptors,
     Map<String, String>? query,
     HttpHeaders? headers,
     HttpBody? body,
     CancelToken? cancelToken,
   }) =>
-      request(
+      requestText(
         settings: settings,
+        interceptors: interceptors,
         method: HttpMethod.delete,
         url: url,
         query: query,
@@ -259,12 +278,14 @@ class Rhttp {
   static Future<HttpTextResponse> head(
     String url, {
     ClientSettings? settings,
+    List<Interceptor>? interceptors,
     Map<String, String>? query,
     HttpHeaders? headers,
     CancelToken? cancelToken,
   }) =>
-      request(
+      requestText(
         settings: settings,
+        interceptors: interceptors,
         method: HttpMethod.head,
         url: url,
         query: query,
@@ -277,13 +298,15 @@ class Rhttp {
   static Future<HttpTextResponse> patch(
     String url, {
     ClientSettings? settings,
+    List<Interceptor>? interceptors,
     Map<String, String>? query,
     HttpHeaders? headers,
     HttpBody? body,
     CancelToken? cancelToken,
   }) =>
-      request(
+      requestText(
         settings: settings,
+        interceptors: interceptors,
         method: HttpMethod.patch,
         url: url,
         query: query,
@@ -297,13 +320,15 @@ class Rhttp {
   static Future<HttpTextResponse> options(
     String url, {
     ClientSettings? settings,
+    List<Interceptor>? interceptors,
     Map<String, String>? query,
     HttpHeaders? headers,
     HttpBody? body,
     CancelToken? cancelToken,
   }) =>
-      request(
+      requestText(
         settings: settings,
+        interceptors: interceptors,
         method: HttpMethod.options,
         url: url,
         query: query,
@@ -317,13 +342,15 @@ class Rhttp {
   static Future<HttpTextResponse> trace(
     String url, {
     ClientSettings? settings,
+    List<Interceptor>? interceptors,
     Map<String, String>? query,
     HttpHeaders? headers,
     HttpBody? body,
     CancelToken? cancelToken,
   }) =>
-      request(
+      requestText(
         settings: settings,
+        interceptors: interceptors,
         method: HttpMethod.trace,
         url: url,
         query: query,

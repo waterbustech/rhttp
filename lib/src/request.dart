@@ -2,89 +2,172 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:meta/meta.dart';
-import 'package:rhttp/src/model/cancel_token.dart';
+import 'package:rhttp/src/interceptor/interceptor.dart';
 import 'package:rhttp/src/model/exception.dart';
+import 'package:rhttp/src/model/header.dart';
 import 'package:rhttp/src/model/request.dart';
 import 'package:rhttp/src/model/response.dart';
 import 'package:rhttp/src/model/settings.dart';
-import 'package:rhttp/src/rust/api/http_types.dart';
 import 'package:rhttp/src/rust/api/error.dart' as rust_error;
 import 'package:rhttp/src/rust/api/http.dart' as rust;
 
 /// Non-Generated helper function that is used by
 /// the client and also by the static class.
 @internal
-Future<HttpResponse> requestInternalGeneric({
-  required int? clientRef,
-  required ClientSettings? settings,
-  required HttpMethod method,
-  required String url,
-  required Map<String, String>? query,
-  required HttpHeaders? headers,
-  required HttpBody? body,
-  required HttpExpectBody expectBody,
-  required CancelToken? cancelToken,
-}) async {
+Future<HttpResponse> requestInternalGeneric(HttpRequest request) async {
+  final interceptors = request.interceptor;
+
+  if (interceptors != null) {
+    try {
+      final result = await interceptors.beforeRequest(request);
+      switch (result) {
+        case InterceptorNextResult<HttpRequest>() ||
+              InterceptorStopResult<HttpRequest>():
+          request = result.value ?? request;
+        case InterceptorResolveResult<HttpRequest>():
+          return result.response;
+      }
+    } on RhttpException {
+      rethrow;
+    } catch (e, st) {
+      throw RhttpInterceptorException(request, e, st);
+    }
+  }
+
+  HttpHeaders? headers = request.headers;
   headers = _digestHeaders(
     headers: headers,
-    body: body,
+    body: request.body,
   );
 
+  bool exceptionByInterceptor = false;
   try {
-    if (expectBody == HttpExpectBody.stream) {
+    if (request.expectBody == HttpExpectBody.stream) {
       final cancelRefCompleter = Completer<int>();
       final responseCompleter = Completer<rust.HttpResponse>();
       final stream = rust.makeHttpRequestReceiveStream(
-        clientAddress: clientRef,
-        settings: settings?.toRustType(),
-        method: method._toRustType(),
-        url: url,
-        query: query?.entries.map((e) => (e.key, e.value)).toList(),
+        clientAddress: request.client?.ref,
+        settings: request.settings?.toRustType(),
+        method: request.method._toRustType(),
+        url: request.url,
+        query: request.query?.entries.map((e) => (e.key, e.value)).toList(),
         headers: headers?._toRustType(),
-        body: body?._toRustType(),
+        body: request.body?._toRustType(),
         onResponse: (r) => responseCompleter.complete(r),
         onCancelToken: (int cancelRef) =>
             cancelRefCompleter.complete(cancelRef),
-        cancelable: cancelToken != null,
+        cancelable: request.cancelToken != null,
       );
 
+      final cancelToken = request.cancelToken;
       if (cancelToken != null) {
         final cancelRef = await cancelRefCompleter.future;
         cancelToken.setRef(cancelRef);
       }
 
-      final response = await responseCompleter.future;
+      final rustResponse = await responseCompleter.future;
 
-      return parseHttpResponse(
-        response,
+      HttpResponse response = parseHttpResponse(
+        request,
+        rustResponse,
         bodyStream: stream,
       );
+
+      if (interceptors != null) {
+        try {
+          final result = await interceptors.afterResponse(response);
+          switch (result) {
+            case InterceptorNextResult<HttpResponse>() ||
+                  InterceptorStopResult<HttpResponse>():
+              response = result.value ?? response;
+            case InterceptorResolveResult<HttpResponse>():
+              return result.response;
+          }
+        } on RhttpException {
+          exceptionByInterceptor = true;
+          rethrow;
+        } catch (e, st) {
+          exceptionByInterceptor = true;
+          throw RhttpInterceptorException(request, e, st);
+        }
+      }
+
+      return response;
     } else {
       final cancelRefCompleter = Completer<int>();
       final responseFuture = rust.makeHttpRequest(
-        clientAddress: clientRef,
-        settings: settings?.toRustType(),
-        method: method._toRustType(),
-        url: url,
-        query: query?.entries.map((e) => (e.key, e.value)).toList(),
+        clientAddress: request.client?.ref,
+        settings: request.settings?.toRustType(),
+        method: request.method._toRustType(),
+        url: request.url,
+        query: request.query?.entries.map((e) => (e.key, e.value)).toList(),
         headers: headers?._toRustType(),
-        body: body?._toRustType(),
-        expectBody: expectBody.toRustType(),
+        body: request.body?._toRustType(),
+        expectBody: request.expectBody.toRustType(),
         onCancelToken: (int cancelRef) =>
             cancelRefCompleter.complete(cancelRef),
-        cancelable: cancelToken != null,
+        cancelable: request.cancelToken != null,
       );
 
+      final cancelToken = request.cancelToken;
       if (cancelToken != null) {
         final cancelRef = await cancelRefCompleter.future;
         cancelToken.setRef(cancelRef);
       }
 
-      return parseHttpResponse(await responseFuture);
+      final rustResponse = await responseFuture;
+
+      HttpResponse response = parseHttpResponse(
+        request,
+        rustResponse,
+      );
+
+      if (interceptors != null) {
+        try {
+          final result = await interceptors.afterResponse(response);
+          switch (result) {
+            case InterceptorNextResult<HttpResponse>() ||
+                  InterceptorStopResult<HttpResponse>():
+              response = result.value ?? response;
+            case InterceptorResolveResult<HttpResponse>():
+              return result.response;
+          }
+        } on RhttpException {
+          exceptionByInterceptor = true;
+          rethrow;
+        } catch (e, st) {
+          exceptionByInterceptor = true;
+          throw RhttpInterceptorException(request, e, st);
+        }
+      }
+
+      return response;
     }
   } catch (e) {
+    if (exceptionByInterceptor) {
+      rethrow;
+    }
     if (e is rust_error.RhttpError) {
-      throw parseError(e);
+      RhttpException exception = parseError(request, e);
+
+      if (interceptors != null) {
+        try {
+          final result = await interceptors.onError(exception);
+          switch (result) {
+            case InterceptorNextResult<RhttpException>() ||
+                  InterceptorStopResult<RhttpException>():
+              exception = result.value ?? exception;
+            case InterceptorResolveResult<RhttpException>():
+              return result.response;
+          }
+        } on RhttpException {
+          rethrow;
+        } catch (e, st) {
+          throw RhttpInterceptorException(request, e, st);
+        }
+      }
+
+      throw exception;
     } else {
       rethrow;
     }
@@ -145,8 +228,10 @@ extension on HttpMethod {
 extension on HttpHeaders {
   rust.HttpHeaders _toRustType() {
     return switch (this) {
-      HttpHeaderMap map => rust.HttpHeaders.map(map.map),
-      HttpHeaderRawMap rawMap => rust.HttpHeaders.rawMap(rawMap.map),
+      HttpHeaderMap map => rust.HttpHeaders.map({
+          for (final entry in map.map.entries) entry.key.httpName: entry.value,
+        }),
+      HttpHeaderRawMap rawMap => rust.HttpHeaders.map(rawMap.map),
       HttpHeaderList list => rust.HttpHeaders.list(list.list),
     };
   }

@@ -1,20 +1,33 @@
 use crate::api::error::RhttpError;
 use crate::api::http::HttpVersionPref;
 use chrono::Duration;
-use reqwest::tls;
+use reqwest::{tls, Certificate};
 
 pub struct ClientSettings {
     pub http_version_pref: HttpVersionPref,
     pub timeout: Option<Duration>,
     pub connect_timeout: Option<Duration>,
     pub throw_on_status_code: bool,
+    pub proxy_settings: Option<ProxySettings>,
     pub tls_settings: Option<TlsSettings>,
 }
 
+pub enum ProxySettings {
+    NoProxy,
+}
+
 pub struct TlsSettings {
+    pub trust_root_certificates: bool,
+    pub trusted_root_certificates: Vec<Vec<u8>>,
     pub verify_certificates: bool,
+    pub client_certificate: Option<ClientCertificate>,
     pub min_tls_version: Option<TlsVersion>,
     pub max_tls_version: Option<TlsVersion>,
+}
+
+pub struct ClientCertificate {
+    pub certificate: Vec<u8>,
+    pub private_key: Vec<u8>,
 }
 
 pub enum TlsVersion {
@@ -29,6 +42,7 @@ impl Default for ClientSettings {
             timeout: None,
             connect_timeout: None,
             throw_on_status_code: true,
+            proxy_settings: None,
             tls_settings: None,
         }
     }
@@ -54,6 +68,12 @@ impl RequestClient {
 fn create_client(settings: ClientSettings) -> Result<RequestClient, RhttpError> {
     let client: reqwest::Client = {
         let mut client = reqwest::Client::builder();
+        if let Some(proxy_settings) = settings.proxy_settings {
+            match proxy_settings {
+                ProxySettings::NoProxy => client = client.no_proxy(),
+            }
+        }
+
         if let Some(timeout) = settings.timeout {
             client = client.timeout(
                 timeout
@@ -70,8 +90,35 @@ fn create_client(settings: ClientSettings) -> Result<RequestClient, RhttpError> 
         }
 
         if let Some(tls_settings) = settings.tls_settings {
+            if !tls_settings.trust_root_certificates {
+                client = client.tls_built_in_root_certs(false);
+            }
+
+            for cert in tls_settings.trusted_root_certificates {
+                client =
+                    client.add_root_certificate(Certificate::from_pem(&cert).map_err(|e| {
+                        RhttpError::RhttpUnknownError(format!(
+                            "Error adding trusted certificate: {e:?}"
+                        ))
+                    })?);
+            }
+
             if !tls_settings.verify_certificates {
                 client = client.danger_accept_invalid_certs(true);
+            }
+
+            if let Some(client_certificate) = tls_settings.client_certificate {
+                let identity = &[
+                    client_certificate.certificate.as_slice(),
+                    "\n".as_bytes(),
+                    client_certificate.private_key.as_slice(),
+                ]
+                .concat();
+
+                client = client.identity(
+                    reqwest::Identity::from_pem(identity)
+                        .map_err(|e| RhttpError::RhttpUnknownError(format!("{e:?}")))?,
+                );
             }
 
             if let Some(min_tls_version) = tls_settings.min_tls_version {
@@ -98,7 +145,7 @@ fn create_client(settings: ClientSettings) -> Result<RequestClient, RhttpError> 
 
         client
             .build()
-            .map_err(|e| RhttpError::RhttpUnknownError(e.to_string()))?
+            .map_err(|e| RhttpError::RhttpUnknownError(format!("{e:?}")))?
     };
 
     Ok(RequestClient {

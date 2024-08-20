@@ -1,8 +1,153 @@
 import 'dart:typed_data';
 
 import 'package:meta/meta.dart';
+import 'package:rhttp/src/client/rhttp_client.dart';
+import 'package:rhttp/src/interceptor/interceptor.dart';
+import 'package:rhttp/src/model/cancel_token.dart';
+import 'package:rhttp/src/model/header.dart';
+import 'package:rhttp/src/model/response.dart';
+import 'package:rhttp/src/model/settings.dart';
+import 'package:rhttp/src/request.dart';
 import 'package:rhttp/src/rust/api/http.dart' as rust;
-import 'package:rhttp/src/rust/api/http_types.dart';
+
+const Map<String, String> _keepQuery = {};
+const HttpHeaders _keepHeaders = HttpHeaders.map({});
+const HttpBody _keepBody = HttpBody.text('');
+
+/// An HTTP request that can be used
+/// on a client or statically.
+class BaseHttpRequest {
+  /// The HTTP method to use.
+  final HttpMethod method;
+
+  /// The URL to request.
+  final String url;
+
+  /// Query parameters.
+  /// This can be null, if there are no query parameters
+  /// or if they are already part of the URL.
+  final Map<String, String>? query;
+
+  /// Headers to send with the request.
+  final HttpHeaders? headers;
+
+  /// The body of the request.
+  final HttpBody? body;
+
+  /// The expected body type of the response.
+  final HttpExpectBody expectBody;
+
+  /// The cancel token to use for the request.
+  final CancelToken? cancelToken;
+
+  /// Map that can be used to store additional information.
+  /// Primarily used by interceptors.
+  /// This is not const to allow for modifications.
+  final Map<String, dynamic> additionalData = {};
+
+  BaseHttpRequest({
+    required this.method,
+    required this.url,
+    required this.query,
+    required this.headers,
+    required this.body,
+    required this.expectBody,
+    required this.cancelToken,
+  });
+}
+
+/// An HTTP request with the information which client to use.
+class HttpRequest extends BaseHttpRequest {
+  /// The client to use for the request.
+  final RhttpClient? client;
+
+  /// The settings to use for the request.
+  /// This is **only** used if [client] is `null`.
+  final ClientSettings? settings;
+
+  /// The interceptor to use for the request.
+  /// This can be a [QueuedInterceptor] if there are multiple interceptors.
+  final Interceptor? interceptor;
+
+  HttpRequest({
+    required this.client,
+    required this.settings,
+    required this.interceptor,
+    required super.method,
+    required super.url,
+    required super.query,
+    required super.headers,
+    required super.body,
+    required super.expectBody,
+    required super.cancelToken,
+  });
+
+  factory HttpRequest.from({
+    required BaseHttpRequest request,
+    required RhttpClient? client,
+    required ClientSettings? settings,
+    required Interceptor? interceptor,
+  }) =>
+      HttpRequest(
+        client: client,
+        settings: settings,
+        interceptor: interceptor,
+        method: request.method,
+        url: request.url,
+        query: request.query,
+        headers: request.headers,
+        body: request.body,
+        expectBody: request.expectBody,
+        cancelToken: request.cancelToken,
+      );
+
+  /// Sends the request using the specified client / settings
+  /// and returns the response.
+  Future<HttpResponse> send() => requestInternalGeneric(this);
+
+  HttpRequest copyWith({
+    RhttpClient? client,
+    ClientSettings? settings,
+    HttpMethod? method,
+    String? url,
+    Map<String, String>? query = _keepQuery,
+    HttpHeaders? headers = _keepHeaders,
+    HttpBody? body = _keepBody,
+    HttpExpectBody? expectBody,
+    CancelToken? cancelToken,
+  }) {
+    final request = HttpRequest(
+      client: client ?? this.client,
+      settings: settings ?? this.settings,
+      interceptor: interceptor,
+      method: method ?? this.method,
+      url: url ?? this.url,
+      query: identical(query, _keepQuery) ? this.query : query,
+      headers: identical(headers, _keepHeaders) ? this.headers : headers,
+      body: identical(body, _keepBody) ? this.body : body,
+      expectBody: expectBody ?? this.expectBody,
+      cancelToken: cancelToken ?? this.cancelToken,
+    );
+
+    request.additionalData.addAll(additionalData);
+
+    return request;
+  }
+
+  /// Convenience method to add a header to the request.
+  /// Returns a new instance of [HttpRequest] with the added header.
+  HttpRequest addHeader({
+    required HttpHeaderName name,
+    required String value,
+  }) {
+    return copyWith(
+      headers: (headers ?? HttpHeaders.empty).copyWith(
+        name: name,
+        value: value,
+      ),
+    );
+  }
+}
 
 enum HttpExpectBody {
   /// The response body is parsed as text.
@@ -63,6 +208,91 @@ sealed class HttpHeaders {
   /// This allows for multiple headers with the same name.
   const factory HttpHeaders.list(List<(String, String)> list) =
       HttpHeaderList._;
+
+  /// An empty header map.
+  static const HttpHeaders empty = HttpHeaderMap._({});
+
+  /// Adds a header to the headers.
+  /// Returns a new instance of [HttpHeaders] with the added header.
+  /// Converts [HttpHeaderMap] to [HttpHeaderRawMap].
+  HttpHeaders copyWithRaw({required String name, required String value}) {
+    return switch (this) {
+      HttpHeaderMap map => HttpHeaders.rawMap({
+          for (final entry in map.map.entries) entry.key.httpName: entry.value,
+          name: value,
+        }),
+      HttpHeaderRawMap rawMap => HttpHeaders.rawMap({
+          ...rawMap.map,
+          name: value,
+        }),
+      HttpHeaderList list => HttpHeaders.list([
+          ...list.list,
+          (name, value),
+        ]),
+    };
+  }
+
+  /// Adds a header to the headers.
+  /// Returns a new instance of [HttpHeaders] with the added header.
+  HttpHeaders copyWith({
+    required HttpHeaderName name,
+    required String value,
+  }) {
+    return switch (this) {
+      HttpHeaderMap map => HttpHeaders.map({
+          ...map.map,
+          name: value,
+        }),
+      HttpHeaderRawMap rawMap => HttpHeaders.rawMap({
+          ...rawMap.map,
+          name.httpName: value,
+        }),
+      HttpHeaderList list => HttpHeaders.list([
+          ...list.list,
+          (name.httpName, value),
+        ]),
+    };
+  }
+
+  /// Removes a header from the headers.
+  /// Returns a new instance of [HttpHeaders] without the [key].
+  HttpHeaders copyWithout(HttpHeaderName key) {
+    return switch (this) {
+      HttpHeaderMap map => HttpHeaders.map({
+          for (final entry in map.map.entries)
+            if (entry.key != key) entry.key: entry.value,
+        }),
+      HttpHeaderRawMap rawMap => HttpHeaders.rawMap({
+          for (final entry in rawMap.map.entries)
+            if (entry.key.toLowerCase() != key.httpName) entry.key: entry.value,
+        }),
+      HttpHeaderList list => HttpHeaders.list([
+          for (final entry in list.list)
+            if (entry.$1.toLowerCase() != key.httpName) entry,
+        ]),
+    };
+  }
+
+  /// Removes a header from the headers.
+  /// Returns a new instance of [HttpHeaders] without the [key].
+  /// Converts [HttpHeaderMap] to [HttpHeaderRawMap].
+  HttpHeaders copyWithoutRaw(String key) {
+    key = key.toLowerCase();
+    return switch (this) {
+      HttpHeaderMap map => HttpHeaders.rawMap({
+          for (final entry in map.map.entries)
+            if (entry.key.httpName != key) entry.key.httpName: entry.value,
+        }),
+      HttpHeaderRawMap rawMap => HttpHeaders.rawMap({
+          for (final entry in rawMap.map.entries)
+            if (entry.key.toLowerCase() != key) entry.key: entry.value,
+        }),
+      HttpHeaderList list => HttpHeaders.list([
+          for (final entry in list.list)
+            if (entry.$1.toLowerCase() != key) entry,
+        ]),
+    };
+  }
 }
 
 /// A typed header map with a set of predefined keys.
@@ -70,6 +300,11 @@ class HttpHeaderMap extends HttpHeaders {
   final Map<HttpHeaderName, String> map;
 
   const HttpHeaderMap._(this.map);
+
+  @override
+  String toString() {
+    return 'HttpHeaderMap(${map.toString()})';
+  }
 }
 
 /// A raw header map where the keys are strings.
@@ -77,6 +312,11 @@ class HttpHeaderRawMap extends HttpHeaders {
   final Map<String, String> map;
 
   const HttpHeaderRawMap._(this.map);
+
+  @override
+  String toString() {
+    return 'HttpHeaderRawMap(${map.toString()})';
+  }
 }
 
 /// A raw header list.
@@ -85,6 +325,11 @@ class HttpHeaderList extends HttpHeaders {
   final List<(String, String)> list;
 
   const HttpHeaderList._(this.list);
+
+  @override
+  String toString() {
+    return 'HttpHeaderList(${list.toString()})';
+  }
 }
 
 sealed class HttpBody {

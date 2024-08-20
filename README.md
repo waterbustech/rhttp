@@ -1,6 +1,7 @@
 # rhttp
 
 [![pub package](https://img.shields.io/pub/v/rhttp.svg)](https://pub.dev/packages/rhttp)
+![ci](https://github.com/Tienisto/rhttp/actions/workflows/ci.yml/badge.svg)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 Make HTTP requests using Rust for Flutter developers.
@@ -15,11 +16,16 @@ On Rust's side, the [reqwest](https://crates.io/crates/reqwest) crate is used to
 Why shouldn't I use [cronet_http](https://pub.dev/packages/cronet_http) or [cupertino_http](https://pub.dev/packages/cupertino_http)?
 These packages for instance only support Android or iOS, while rhttp supports all platforms (except web currently) with a single configuration.
 
+The APK size will increase by 2 MB on arm64 and 6 MB if compiled for all architectures (x64, arm32, arm64).
+
 ## Features
 
 - ✅ HTTP/1, HTTP/1.1, HTTP/2, and HTTP/3 support
 - ✅ TLS 1.2 and 1.3 support
 - ✅ Connection pooling
+- ✅ Interceptors
+- ✅ Retry (optional)
+- ✅ Certificate pinning
 - ✅ Strong type safety
 - ✅ Optional compatibility layer for the [http](https://pub.dev/packages/http) package
 
@@ -27,9 +33,9 @@ These packages for instance only support Android or iOS, while rhttp supports al
 
 rhttp is much faster at downloading large files and a bit faster at downloading small files compared to the default HTTP client in Dart.
 
-![benchmark-small](https://raw.githubusercontent.com/Tienisto/rhttp/main/benchmark/result-small.png)
-
-![benchmark-large](https://raw.githubusercontent.com/Tienisto/rhttp/main/benchmark/result-large.png)
+| Small Files (1 KB)                                                                                   | Large Files (10 MB)                                                                                  |
+|------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------|
+| ![benchmark-small](https://raw.githubusercontent.com/Tienisto/rhttp/main/benchmark/result-small.png) | ![benchmark-large](https://raw.githubusercontent.com/Tienisto/rhttp/main/benchmark/result-large.png) |
 
 Referred packages: [dio](https://pub.dev/packages/dio) (5.5.0+1), [http](https://pub.dev/packages/http) (1.2.2), [rhttp](https://pub.dev/packages/rhttp) (0.3.0)
 
@@ -103,7 +109,7 @@ You can make requests using different HTTP methods:
 
 ```dart
 // Pass the method as an argument
-await Rhttp.request(method: HttpMethod.post, url: 'https://example.com');
+await Rhttp.requestText(method: HttpMethod.post, url: 'https://example.com');
 
 // Use the helper methods
 await Rhttp.post('https://example.com');
@@ -122,8 +128,7 @@ await Rhttp.get('https://example.com', query: {'key': 'value'});
 You can add headers to the request:
 
 ```dart
-await Rhttp.request(
-  method: HttpMethod.get,
+await Rhttp.post(
   url: 'https://example.com',
   headers: const HttpHeaders.map({
     HttpHeaderName.contentType: 'application/json',
@@ -141,8 +146,7 @@ Pass a string to the `HttpBody.text` constructor.
 
 ```dart
 // Raw body
-await Rhttp.request(
-  method: HttpMethod.post,
+await Rhttp.post(
   url: 'https://example.com',
   body: HttpBody.text('raw body'),
 );
@@ -156,8 +160,7 @@ The Content-Type header will be set to `application/json` if not provided.
 
 ```dart
 // JSON body
-await Rhttp.request(
-  method: HttpMethod.post,
+await Rhttp.post(
   url: 'https://example.com',
   body: HttpBody.json({'key': 'value'}),
 );
@@ -169,8 +172,7 @@ Pass a `Uint8List` to the `HttpBody.bytes` constructor.
 
 ```dart
 // Binary body
-await Rhttp.request(
-  method: HttpMethod.post,
+await Rhttp.post(
   url: 'https://example.com',
   body: HttpBody.bytes(Uint8List.fromList([0, 1, 2])),
 );
@@ -184,8 +186,7 @@ The Content-Type header will be set to `application/x-www-form-urlencoded` if no
 
 ```dart
 // Form body
-await Rhttp.request(
-  method: HttpMethod.post,
+await Rhttp.post(
   url: 'https://example.com',
   body: HttpBody.form({'key': 'value'}),
 );
@@ -198,8 +199,7 @@ Pass a map of `MultipartItem` to the `HttpBody.multipart` constructor.
 The Content-Type header will be overridden to `multipart/form-data` with a random boundary.
 
 ```dart
-await Rhttp.request(
-  method: HttpMethod.post,
+await Rhttp.post(
   url: 'https://example.com',
   body: HttpBody.multipart({
     'name': const MultipartItem.text(
@@ -249,6 +249,13 @@ You can dispose the client when you are done with it:
 client.dispose();
 ```
 
+To create a client synchronously, use `RhttpClient.createSync`.
+This should only be called during app start to avoid blocking the UI thread.
+
+```dart
+final client = RhttpClient.createSync();
+```
+
 ### ➤ Cancel Requests
 
 You can cancel a request by providing a `CancelToken`:
@@ -280,6 +287,7 @@ The following exceptions can be thrown:
 | `RhttpStatusCodeException`         | Response has 4xx or 5xx status code.    |
 | `RhttpInvalidCertificateException` | Server certificate is invalid.          |
 | `RhttpInvalidClientException`      | Request is made with an invalid client. |
+| `RhttpInterceptorException`        | Interceptor threw an exception.         |
 | `RhttpUnknownException`            | Unknown error occurred.                 |
 
 ### ➤ Timeout
@@ -309,6 +317,100 @@ await Rhttp.get(
   ),
 );
 ```
+
+### ➤ Interceptors
+
+You can add interceptors to the client to modify requests / responses, handle errors, observe requests, etc.
+
+Any exception thrown by an interceptor that is not a subclass of `RhttpException`
+will be caught and wrapped in a `RhttpInterceptorException`.
+
+```dart
+class TestInterceptor extends Interceptor {
+  @override
+  Future<InterceptorResult<HttpRequest>> beforeRequest(
+    HttpRequest request,
+  ) async {
+    return Interceptor.next(request.addHeader(
+      name: HttpHeaderName.accept,
+      value: 'application/json',
+    ));
+  }
+
+  @override
+  Future<InterceptorResult<HttpResponse>> afterResponse(
+    HttpResponse response,
+  ) async {
+    return Interceptor.next();
+  }
+
+  @override
+  Future<InterceptorResult<RhttpException>> onError(
+    RhttpException exception,
+  ) async {
+    return Interceptor.next();
+  }
+}
+```
+
+There are 4 termination methods:
+
+- `Interceptor.next()`: Continue with the next interceptor.
+- `Interceptor.stop()`: Stop the interceptor chain.
+- `Interceptor.resolve()`: Resolve the request with the given response.
+- `throw RhttpException`: Throw an exception. The stack trace will be preserved.
+
+Instead of implementing the `Interceptor` class, you can use the `SimpleInterceptor` class:
+
+```dart
+final client = await RhttpClient.create(
+  interceptors: [
+    SimpleInterceptor(
+      onError: (exception) async {
+        if (exception is RhttpStatusCodeException && exception.statusCode == 401) {
+          // Log out
+        }
+        return Interceptor.next();
+      },
+    ),
+  ],
+);
+```
+
+### ➤ RetryInterceptor
+
+There is a built-in `RetryInterceptor` that retries the request if it fails.
+
+```dart
+class RefreshTokenInterceptor extends RetryInterceptor {
+  final Ref ref;
+
+  RefreshTokenInterceptor(this.ref);
+
+  @override
+  int get maxRetries => 1;
+
+  @override
+  bool shouldRetry(HttpResponse? response, RhttpException? exception) {
+    return exception is RhttpStatusCodeException &&
+        (exception.statusCode == 401 || exception.statusCode == 403);
+  }
+
+  @override
+  Future<HttpRequest?> beforeRetry(
+    int attempt,
+    HttpRequest request,
+    HttpResponse? response,
+    RhttpException? exception,
+  ) async {
+    ref.read(authProvider.notifier).state = await refresh();
+    return null;
+  }
+}
+```
+
+Checkout this [example](https://github.com/Tienisto/rhttp/blob/main/example/lib/interceptor_riverpod.dart)
+to see how access tokens can be refreshed using Riverpod.
 
 ### ➤ HTTP version
 
@@ -341,6 +443,62 @@ await Rhttp.get(
 );
 ```
 
+### ➤ Certificate Pinning
+
+To improve security, you can specify the expected server certificate.
+
+Due to limitations on Rust's side ([Github Issue](https://github.com/seanmonstar/reqwest/issues/298)),
+you need to either provide the full certificate chain, or the root certificate.
+
+```dart
+await Rhttp.get(
+  'https://example.com',
+  settings: const ClientSettings(
+    tlsSettings: TlsSettings(
+      trustedRootCertificates: [
+        '''-----BEGIN CERTIFICATE-----
+some certificate
+-----END CERTIFICATE-----''',
+],
+    ),
+  ),
+);
+```
+
+### ➤ Disable pre-installed root certificates
+
+By default, the pre-installed root certificates are used.
+You can disable this behavior by setting `trustRootCertificates` to `false`.
+
+```dart
+await Rhttp.get(
+  'https://example.com',
+  settings: const ClientSettings(
+    tlsSettings: TlsSettings(
+      trustRootCertificates: false,
+    ),
+  ),
+);
+```
+
+### ➤ Client Authentication / mutual TLS
+
+You can specify the client certificate and key to enable mutual TLS (mTLS).
+
+```dart
+await Rhttp.get(
+  'https://example.com',
+  settings: const ClientSettings(
+    tlsSettings: TlsSettings(
+      clientCertificate: ClientCertificate(
+         certificate: clientCert,
+         privateKey: clientKey,
+      ),
+    ),
+  ),
+);
+```
+
 ### ➤ Disable certificate verification
 
 This is very insecure and should only be used for testing purposes.
@@ -356,6 +514,21 @@ await Rhttp.get(
 );
 ```
 
+### ➤ Proxy
+
+By default, the system proxy is enabled.
+
+Disable system proxy:
+
+```dart
+await Rhttp.get(
+  'https://example.com',
+  settings: const ClientSettings(
+    proxySettings: ProxySettings.noProxy(),
+  ),
+);
+```
+
 ### ➤ Compatibility Layer
 
 You can use the `RhttpCompatibleClient` that implements the `Client` of the [http](https://pub.dev/packages/http) package,
@@ -366,7 +539,6 @@ This comes with some downsides, such as:
 - inferior type safety due to the flaw that `body` is of type `Object?` instead of a sane supertype.
 - body of type `Map` is implicitly interpreted as `x-www-form-urlencoded` that is only documented in StackOverflow (as of writing this).
 - no support for cancellation
-- no out-of-the-box support for multipart requests
 
 ```dart
 import 'package:rhttp/rhttp.dart';
