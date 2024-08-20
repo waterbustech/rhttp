@@ -1,19 +1,14 @@
-import 'dart:io';
-
+import 'package:benchmark/dio_adapter.dart';
+import 'package:benchmark/dio_transformer.dart';
 import 'package:dio/dio.dart';
-import 'package:dio/io.dart';
 
 Future<int> benchmarkDio(String url, int count) async {
   print('benchmark using dio package...');
-
   final dio = Dio();
-  dio.httpClientAdapter = IOHttpClientAdapter(
-    createHttpClient: () {
-      final client = HttpClient();
-      client.badCertificateCallback = (cert, host, port) => true;
-      return client;
-    },
-  );
+  final rhttp = RhttpAdapter();
+  await rhttp.init();
+  dio.httpClientAdapter = rhttp;
+  dio.transformer = FlutterTransformer();
 
   final stopwatch = Stopwatch()..start();
   final uri = Uri.parse(url);
