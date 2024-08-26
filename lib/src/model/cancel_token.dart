@@ -1,12 +1,12 @@
 import 'dart:async';
 
-import 'package:meta/meta.dart';
+import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:rhttp/src/rust/api/http.dart' as rust;
 
 /// A token that can be used to cancel an HTTP request.
 /// This token must be passed to the request method.
 class CancelToken {
-  final _ref = Completer<int>();
+  final _ref = Completer<PlatformInt64>();
 
   bool _isCancelled = false;
 
@@ -18,7 +18,7 @@ class CancelToken {
   CancelToken();
 
   @internal
-  void setRef(int ref) {
+  void setRef(PlatformInt64 ref) {
     _ref.complete(ref);
   }
 

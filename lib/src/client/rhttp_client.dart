@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:meta/meta.dart';
 import 'package:rhttp/src/interceptor/interceptor.dart';
 import 'package:rhttp/src/model/cancel_token.dart';
@@ -21,7 +22,7 @@ class RhttpClient {
 
   /// Internal reference to the Rust client.
   @internal
-  final int ref;
+  final PlatformInt64 ref;
 
   const RhttpClient._({
     required this.settings,

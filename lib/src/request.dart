@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:meta/meta.dart';
 import 'package:rhttp/src/interceptor/interceptor.dart';
 import 'package:rhttp/src/model/exception.dart';
@@ -43,7 +44,7 @@ Future<HttpResponse> requestInternalGeneric(HttpRequest request) async {
   bool exceptionByInterceptor = false;
   try {
     if (request.expectBody == HttpExpectBody.stream) {
-      final cancelRefCompleter = Completer<int>();
+      final cancelRefCompleter = Completer<PlatformInt64>();
       final responseCompleter = Completer<rust.HttpResponse>();
       final stream = rust.makeHttpRequestReceiveStream(
         clientAddress: request.client?.ref,
@@ -54,8 +55,7 @@ Future<HttpResponse> requestInternalGeneric(HttpRequest request) async {
         headers: headers?._toRustType(),
         body: request.body?._toRustType(),
         onResponse: (r) => responseCompleter.complete(r),
-        onCancelToken: (int cancelRef) =>
-            cancelRefCompleter.complete(cancelRef),
+        onCancelToken: (cancelRef) => cancelRefCompleter.complete(cancelRef),
         cancelable: request.cancelToken != null,
       );
 
@@ -94,7 +94,7 @@ Future<HttpResponse> requestInternalGeneric(HttpRequest request) async {
 
       return response;
     } else {
-      final cancelRefCompleter = Completer<int>();
+      final cancelRefCompleter = Completer<PlatformInt64>();
       final responseFuture = rust.makeHttpRequest(
         clientAddress: request.client?.ref,
         settings: request.settings?.toRustType(),
@@ -104,8 +104,7 @@ Future<HttpResponse> requestInternalGeneric(HttpRequest request) async {
         headers: headers?._toRustType(),
         body: request.body?._toRustType(),
         expectBody: request.expectBody.toRustType(),
-        onCancelToken: (int cancelRef) =>
-            cancelRefCompleter.complete(cancelRef),
+        onCancelToken: (cancelRef) => cancelRefCompleter.complete(cancelRef),
         cancelable: request.cancelToken != null,
       );
 
